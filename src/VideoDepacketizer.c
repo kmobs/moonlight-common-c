@@ -89,7 +89,13 @@ static void cleanupFrameState(void) {
     while (nalChainHead != NULL) {
         lastEntry = (PLENTRY_INTERNAL)nalChainHead;
         nalChainHead = lastEntry->entry.next;
-        free(lastEntry->allocPtr);
+        if (lastEntry->allocPtr == lastEntry) {
+            free(lastEntry->allocPtr);
+        }
+        else {
+            free(lastEntry->allocPtr);
+            free(lastEntry);
+        }
     }
 
     nalChainTail = NULL;
@@ -307,7 +313,13 @@ void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus) {
     while (qdu->decodeUnit.bufferList != NULL) {
         lastEntry = (PLENTRY_INTERNAL)qdu->decodeUnit.bufferList;
         qdu->decodeUnit.bufferList = lastEntry->entry.next;
-        free(lastEntry->allocPtr);
+        if (lastEntry->allocPtr == lastEntry) {
+            free(lastEntry->allocPtr);
+        }
+        else {
+            free(lastEntry->allocPtr);
+            free(lastEntry);
+        }
     }
 
     // We will have stack-allocated entries iff we have a direct-submit decoder
@@ -1195,11 +1207,14 @@ void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
     // The packet length was validated by the RtpVideoQueue
     LC_ASSERT(queueEntry.length >= dataOffset + (int)sizeof(NV_VIDEO_PACKET));
 
-    // Reuse the memory reserved for the RTPFEC_QUEUE_ENTRY to store the LENTRY_INTERNAL
-    // now that we're in the depacketizer. We saved a copy of the real FEC queue entry
-    // on the stack here so we can safely modify this memory in place.
-    LC_ASSERT(sizeof(LENTRY_INTERNAL) <= sizeof(RTPV_QUEUE_ENTRY));
-    PLENTRY_INTERNAL existingEntry = (PLENTRY_INTERNAL)queueEntryPtr;
+    // Use a dedicated depacketizer entry instead of reusing RTP queue memory.
+    // The in-place cast is fragile across struct/layout changes and can silently
+    // corrupt heap metadata in release builds.
+    PLENTRY_INTERNAL existingEntry = (PLENTRY_INTERNAL)malloc(sizeof(*existingEntry));
+    if (existingEntry == NULL) {
+        free(queueEntry.packet);
+        return;
+    }
     existingEntry->allocPtr = queueEntry.packet;
 
     processRtpPayload((PNV_VIDEO_PACKET)(((char*)queueEntry.packet) + dataOffset),
@@ -1213,6 +1228,7 @@ void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
     if (existingEntry != NULL) {
         // processRtpPayload didn't want this packet, so just free it
         free(existingEntry->allocPtr);
+        free(existingEntry);
     }
 }
 
